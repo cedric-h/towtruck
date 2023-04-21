@@ -204,9 +204,9 @@ pub fn main() !void {
         .InstanceDataStepRate = 0
       },
       .{
-        .SemanticName         = "COL",
+        .SemanticName         = "TEX",
         .SemanticIndex        = 0,
-        .Format               = .R32G32B32A32_FLOAT,
+        .Format               = .R32G32_FLOAT,
         .InputSlot            = 0,
         .AlignedByteOffset    = d3d11.D3D11_APPEND_ALIGNED_ELEMENT,
         .InputSlotClass       = d3d11.D3D11_INPUT_PER_VERTEX_DATA,
@@ -231,32 +231,79 @@ pub fn main() !void {
   var stride  : windows.UINT = undefined;
   var offset  : windows.UINT = undefined;
   {
-      const vertex_data = [_]f32{
-        // x,    y,   r,   g,   b,   a
-         0.0,  0.5, 0.0, 1.0, 0.0, 1.0,
-         0.5, -0.5, 1.0, 0.0, 0.0, 1.0,
-        -0.5, -0.5, 0.0, 0.0, 1.0, 1.0
-      };
-      stride = 6 * @sizeOf(f32);
-      numVerts = @sizeOf(@TypeOf(vertex_data)) / stride;
-      offset = 0;
+    const vertex_data = [_]f32{ // x, y, u, v
+      -0.5,  0.5, 0.0, 0.0,
+       0.5, -0.5, 1.0, 1.0,
+      -0.5, -0.5, 0.0, 1.0,
+      -0.5,  0.5, 0.0, 0.0,
+       0.5,  0.5, 1.0, 0.0,
+       0.5, -0.5, 1.0, 1.0
+    };
+    stride = 4 * @sizeOf(f32);
+    numVerts = @sizeOf(@TypeOf(vertex_data)) / stride;
+    offset = 0;
 
-      var vertexBufferDesc = d3d11.D3D11_BUFFER_DESC{
-        .ByteWidth = @sizeOf(@TypeOf(vertex_data)),
-        .Usage     = d3d11.D3D11_USAGE_IMMUTABLE,
-        .BindFlags = @enumToInt(d3d11.D3D11_BIND_VERTEX_BUFFER),
-        .CPUAccessFlags = 0,
-        .MiscFlags = 0,
-        .StructureByteStride = 0,
-      };
+    var vertexBufferDesc = d3d11.D3D11_BUFFER_DESC{
+      .ByteWidth = @sizeOf(@TypeOf(vertex_data)),
+      .Usage     = d3d11.D3D11_USAGE_IMMUTABLE,
+      .BindFlags = @enumToInt(d3d11.D3D11_BIND_VERTEX_BUFFER),
+      .CPUAccessFlags = 0,
+      .MiscFlags = 0,
+      .StructureByteStride = 0,
+    };
 
-      var vertexSubresourceData = d3d11.D3D11_SUBRESOURCE_DATA{
-        .pSysMem = @ptrCast(?*const anyopaque, &vertex_data),
-        .SysMemPitch = 0,
-        .SysMemSlicePitch = 0,
-      };
+    var vertexSubresourceData = d3d11.D3D11_SUBRESOURCE_DATA{
+      .pSysMem = @ptrCast(?*const anyopaque, &vertex_data),
+      .SysMemPitch = 0,
+      .SysMemSlicePitch = 0,
+    };
 
-      _ = d3d11_device.?.ID3D11Device_CreateBuffer(&vertexBufferDesc, &vertexSubresourceData, &vertex_buffer);
+    _ = d3d11_device.?.ID3D11Device_CreateBuffer(&vertexBufferDesc, &vertexSubresourceData, &vertex_buffer);
+  }
+
+  var sampler_state: ?*d3d11.ID3D11SamplerState = undefined;
+  {
+    const sampler_desc = zeroInit(d3d11.D3D11_SAMPLER_DESC, .{
+      .Filter         = d3d11.D3D11_FILTER_MIN_MAG_MIP_POINT,
+      .AddressU       = d3d11.D3D11_TEXTURE_ADDRESS_BORDER,
+      .AddressV       = d3d11.D3D11_TEXTURE_ADDRESS_BORDER,
+      .AddressW       = d3d11.D3D11_TEXTURE_ADDRESS_BORDER,
+      .BorderColor    = .{ 1, 1, 1, 1},
+      .ComparisonFunc = d3d11.D3D11_COMPARISON_NEVER,
+    });
+
+    _ = d3d11_device.?.ID3D11Device_CreateSamplerState(&sampler_desc, &sampler_state);
+  }
+
+  var texture:      ?*d3d11.ID3D11Texture2D          = undefined;
+  var texture_view: ?*d3d11.ID3D11ShaderResourceView = undefined;
+  {
+    const tex_desc = zeroInit(d3d11.D3D11_TEXTURE2D_DESC, .{
+      .Width              = 2,
+      .Height             = 2,
+      .MipLevels          = 1,
+      .ArraySize          = 1,
+      .Format             = .R8G8B8A8_UNORM_SRGB,
+      .SampleDesc         = .{ .Count = 1 },
+      .Usage              = d3d11.D3D11_USAGE_IMMUTABLE,
+      .BindFlags          = d3d11.D3D11_BIND_SHADER_RESOURCE,
+    });
+
+    const test_tex_bytes = [2*2*4]u8{
+        0,   0, 255, 255,
+      255,   0,   0, 255,
+      255,   0,   0, 255,
+        0,   0, 255, 255
+    };
+
+    const tex_subresource_data = zeroInit(d3d11.D3D11_SUBRESOURCE_DATA, .{
+      .pSysMem = &test_tex_bytes,
+      .SysMemPitch = 4 * tex_desc.Width,
+    });
+
+    _ = d3d11_device.?.ID3D11Device_CreateTexture2D(&tex_desc, &tex_subresource_data, &texture);
+    const tex_as_resource = @ptrCast(?*d3d11.ID3D11Resource, texture);
+    _ = d3d11_device.?.ID3D11Device_CreateShaderResourceView(tex_as_resource, null, &texture_view);
   }
 
   _ = user32.ShowWindow(hwnd.?, 1);
@@ -324,6 +371,15 @@ pub fn main() !void {
 
     d3d11_device_ctx.?.ID3D11DeviceContext_VSSetShader(vertex_shader, null, 0);
     d3d11_device_ctx.?.ID3D11DeviceContext_PSSetShader(pixel_shader, null, 0);
+
+    d3d11_device_ctx.?.ID3D11DeviceContext_PSSetShaderResources(
+      0, 1,
+      @ptrCast(?[*]?*d3d11.ID3D11ShaderResourceView, &texture_view)
+    );
+    d3d11_device_ctx.?.ID3D11DeviceContext_PSSetSamplers(
+      0, 1,
+      @ptrCast(?[*]?*d3d11.ID3D11SamplerState, &sampler_state)
+    );
 
     d3d11_device_ctx.?.ID3D11DeviceContext_IASetVertexBuffers(
       0, 1,
