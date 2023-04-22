@@ -5,9 +5,12 @@
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 #include <gdiplus.h>
+#include <assert.h>
 using namespace Gdiplus;
 
-#include <assert.h>
+#define VERT_FLOAT_COUNT 4
+#define VERT_MAX_COUNT   4
+#define INDX_MAX_COUNT   6
 
 static bool global_windowDidResize = false;
 
@@ -247,30 +250,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
 
     // Create Vertex Buffer
     ID3D11Buffer* vertexBuffer;
-    UINT numVerts;
-    UINT stride;
-    UINT offset;
     {
-        float vertexData[] = { // x, y, u, v
-            -0.5f,  0.5f, 0.f, 0.f,
-            0.5f, -0.5f, 1.f, 1.f,
-            -0.5f, -0.5f, 0.f, 1.f,
-            -0.5f,  0.5f, 0.f, 0.f,
-            0.5f,  0.5f, 1.f, 0.f,
-            0.5f, -0.5f, 1.f, 1.f
-        };
-        stride = 4 * sizeof(float);
-        numVerts = sizeof(vertexData) / stride;
-        offset = 0;
-
         D3D11_BUFFER_DESC vertexBufferDesc = {};
-        vertexBufferDesc.ByteWidth = sizeof(vertexData);
-        vertexBufferDesc.Usage     = D3D11_USAGE_IMMUTABLE;
-        vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        vertexBufferDesc.ByteWidth      = sizeof(float) * VERT_FLOAT_COUNT * VERT_MAX_COUNT;
+        vertexBufferDesc.Usage          = D3D11_USAGE_DYNAMIC;
+        vertexBufferDesc.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
+        vertexBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
-        D3D11_SUBRESOURCE_DATA vertexSubresourceData = { vertexData };
+        HRESULT hResult = d3d11Device->CreateBuffer(&vertexBufferDesc, NULL, &vertexBuffer);
+        assert(SUCCEEDED(hResult));
+    }
 
-        HRESULT hResult = d3d11Device->CreateBuffer(&vertexBufferDesc, &vertexSubresourceData, &vertexBuffer);
+    ID3D11Buffer* indexBuffer;
+    {
+        D3D11_BUFFER_DESC indexBufferDesc = {};
+        indexBufferDesc.ByteWidth      = INDX_MAX_COUNT * sizeof(uint16_t);
+        indexBufferDesc.Usage          = D3D11_USAGE_DYNAMIC;
+        indexBufferDesc.BindFlags      = D3D11_BIND_INDEX_BUFFER;
+        indexBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+        HRESULT hResult = d3d11Device->CreateBuffer(&indexBufferDesc, NULL, &indexBuffer);
         assert(SUCCEEDED(hResult));
     }
 
@@ -300,7 +299,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
         unsigned char *texBytes = 0;
         ULONG_PTR gdiplusToken;
         {
-            int charSize = 16;
+            int charSize = 32;
             int padding = 2;
             texSize = (padding*2 + charSize)*16;
 
@@ -412,6 +411,33 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
         D3D11_VIEWPORT viewport = { 0.0f, 0.0f, (FLOAT)(winRect.right - winRect.left), (FLOAT)(winRect.bottom - winRect.top), 0.0f, 1.0f };
         d3d11DeviceContext->RSSetViewports(1, &viewport);
 
+        {
+            {
+                float ar = viewport.Width / viewport.Height;
+                float vertexData[] = { // x, y, u, v
+                    -0.5f,  0.5f*ar, 0.f, 0.f,
+                     0.5f, -0.5f*ar, 1.f, 1.f,
+                    -0.5f, -0.5f*ar, 0.f, 1.f,
+                     0.5f,  0.5f*ar, 1.f, 0.f,
+                };
+                D3D11_MAPPED_SUBRESOURCE vertsMapped;
+                d3d11DeviceContext->Map(vertexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &vertsMapped);
+                memcpy(vertsMapped.pData, vertexData, sizeof(vertexData));
+                d3d11DeviceContext->Unmap(vertexBuffer, 0);
+            }
+
+            {
+                uint16_t indexData[] = { // x, y, u, v
+                    0, 1, 2,
+                    0, 3, 1
+                };
+                D3D11_MAPPED_SUBRESOURCE indxsMapped;
+                d3d11DeviceContext->Map( indexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &indxsMapped);
+                memcpy(indxsMapped.pData,  indexData, sizeof( indexData));
+                d3d11DeviceContext->Unmap( indexBuffer, 0);
+            }
+        }
+
         d3d11DeviceContext->OMSetRenderTargets(1, &d3d11FrameBufferView, nullptr);
 
         d3d11DeviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -423,9 +449,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
         d3d11DeviceContext->PSSetShaderResources(0, 1, &textureView);
         d3d11DeviceContext->PSSetSamplers(0, 1, &samplerState);
 
+        UINT stride = VERT_FLOAT_COUNT * sizeof(float);
+        UINT offset = 0;
         d3d11DeviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
+        d3d11DeviceContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R16_UINT, 0);
 
-        d3d11DeviceContext->Draw(numVerts, 0);
+        // d3d11DeviceContext->Draw(numVerts, 0);
+        d3d11DeviceContext->DrawIndexed(6, 0, 0);
 
         d3d11SwapChain->Present(1, 0);
     }
