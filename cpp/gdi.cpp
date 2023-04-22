@@ -9,8 +9,8 @@
 using namespace Gdiplus;
 
 #define VERT_FLOAT_COUNT 4
-#define VERT_MAX_COUNT   4
-#define INDX_MAX_COUNT   6
+#define VERT_MAX_COUNT   (1 << 12)
+#define INDX_MAX_COUNT   (1 << 13)
 
 static bool global_windowDidResize = false;
 
@@ -273,6 +273,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
         assert(SUCCEEDED(hResult));
     }
 
+    // Create Constant Buffer
+    struct Constants {
+        float screen_res_x, screen_res_y;
+        float    tex_res_x,    tex_res_y;
+    };
+    ID3D11Buffer* constantBuffer;
+    {
+        D3D11_BUFFER_DESC constantBufferDesc = {};
+        // ByteWidth must be a multiple of 16, per the docs
+        constantBufferDesc.ByteWidth      = sizeof(Constants) + 0xf & 0xfffffff0;
+        constantBufferDesc.Usage          = D3D11_USAGE_DYNAMIC;
+        constantBufferDesc.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
+        constantBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+        HRESULT hResult = d3d11Device->CreateBuffer(&constantBufferDesc, nullptr, &constantBuffer);
+        assert(SUCCEEDED(hResult));
+    }
+
     // Create Sampler State
     ID3D11SamplerState* samplerState;
     {
@@ -290,17 +308,41 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
         d3d11Device->CreateSamplerState(&samplerDesc, &samplerState);
     }
 
+    // Create Blend State
+    ID3D11BlendState *blendState;
+    {
+        D3D11_BLEND_DESC desc = {
+            .AlphaToCoverageEnable = FALSE,
+            .IndependentBlendEnable = FALSE,
+            .RenderTarget = {
+                {
+                    .BlendEnable = TRUE,
+                    .SrcBlend = D3D11_BLEND_ONE,
+                    .DestBlend = D3D11_BLEND_INV_SRC_ALPHA,
+                    .BlendOp = D3D11_BLEND_OP_ADD,
+                    .SrcBlendAlpha = D3D11_BLEND_ONE,
+                    .DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA,
+                    .BlendOpAlpha = D3D11_BLEND_OP_ADD,
+                    .RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL,
+                },
+            },
+        };
+        d3d11Device->CreateBlendState(&desc, &blendState);
+    }
+
+    int charWidths[255] = {0};
+    int charSize = 12;
+    int padding = charSize/2;
+    int texSize;
+
     // Load Image
     ID3D11Texture2D* texture;
     ID3D11ShaderResourceView* textureView;
     {
         int texBytesPerRow;
-        int texSize;
         unsigned char *texBytes = 0;
         ULONG_PTR gdiplusToken;
         {
-            int charSize = 32;
-            int padding = 2;
             texSize = (padding*2 + charSize)*16;
 
             // Initialize GDI+.
@@ -309,15 +351,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
             Bitmap bitmap(texSize, texSize, PixelFormat32bppARGB);
 
             Graphics *graphics = Graphics::FromImage(&bitmap);
-            graphics->Clear(Color(0, 0, 0, 255));
+            // graphics->Clear(Color(0, 0, 0, 255));
             graphics->SetPixelOffsetMode(PixelOffsetModeHighQuality);
             // graphics->SetPixelOffsetMode(PixelOffsetModeNone);
             graphics->SetInterpolationMode(InterpolationModeHighQualityBicubic);
             graphics->SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
             {
-                FontFamily  fontFamily(L"Consolas");
-                Font        font(&fontFamily, charSize, FontStyleRegular, UnitPixel);
-                SolidBrush  solidBrush(Color(255, 255, 255, 255));
+                // FontFamily  fontFamily(L"Comic Sans MS");
+                // Font        font(&fontFamily, charSizePoints, FontStyleRegular, UnitPixel);
+                HDC __hdc = graphics->GetHDC();
+                SetMapMode(__hdc, MM_TEXT);
+                float charSizePoints = charSize * 96 / 72;
+                HFONT hfont = CreateFont(
+                    charSizePoints,0,0,0,
+                    FW_DONTCARE,false,false,false,
+                    DEFAULT_CHARSET,
+                    OUT_OUTLINE_PRECIS,
+                    CLIP_DEFAULT_PRECIS,
+                    CLEARTYPE_QUALITY,
+                    VARIABLE_PITCH,
+                    L"Arial"
+                );
+                Font font(__hdc, hfont);
+                graphics->ReleaseHDC(__hdc);
+                SolidBrush solidBrush(Color(255, 255, 255, 255));
 
                 for (int i = 0; i < 255; i++) {
                     float x = (float)(i % 16) * (charSize + 2*padding) + padding;
@@ -325,6 +382,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
                     PointF pointF(x, y);
                     WCHAR str[2]{ (WCHAR)i, 0 };
                     graphics->DrawString(str, -1, &font, pointF, &solidBrush);
+
+                    HDC hdc = graphics->GetHDC();
+                    {
+                        SetMapMode(hdc, MM_TEXT);
+                        SelectObject(hdc, hfont);
+
+                        ABCFLOAT abcf;
+                        GetCharABCWidthsFloat(hdc, i, i, &abcf);
+                        float width = abcf.abcfA + abcf.abcfB + abcf.abcfC;
+                        charWidths[i] = round(width); /* idk why but ... */
+                    }
+                    graphics->ReleaseHDC(hdc);
                 }
             }
 
@@ -337,16 +406,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
             texBytesPerRow = bd.Stride;
 
             /* premultiply alpha */
-            for (int x = 0; x < texSize; x++)
-                for (int y = 0; y < texSize; y++) {
-                    float r = texBytes[y*texBytesPerRow + x*4 + 0];
-                    float g = texBytes[y*texBytesPerRow + x*4 + 1];
-                    float b = texBytes[y*texBytesPerRow + x*4 + 2];
-                    float a = texBytes[y*texBytesPerRow + x*4 + 3] / 255.0f;
-                    texBytes[y*texBytesPerRow + x*4 + 0] = int(round(r*a));
-                    texBytes[y*texBytesPerRow + x*4 + 1] = int(round(g*a));
-                    texBytes[y*texBytesPerRow + x*4 + 2] = int(round(b*a));
-                }
+            if (1)
+                for (int x = 0; x < texSize; x++)
+                    for (int y = 0; y < texSize; y++) {
+                        float r = texBytes[y*texBytesPerRow + x*4 + 0];
+                        float g = texBytes[y*texBytesPerRow + x*4 + 1];
+                        float b = texBytes[y*texBytesPerRow + x*4 + 2];
+                        float a = (float)texBytes[y*texBytesPerRow + x*4 + 3] / 255.0f;
+                        texBytes[y*texBytesPerRow + x*4 + 0] = round(r*a);
+                        texBytes[y*texBytesPerRow + x*4 + 1] = round(g*a);
+                        texBytes[y*texBytesPerRow + x*4 + 2] = round(b*a);
+                    }
         }
 
         // Create Texture
@@ -412,30 +482,54 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
         d3d11DeviceContext->RSSetViewports(1, &viewport);
 
         {
-            {
-                float ar = viewport.Width / viewport.Height;
-                float vertexData[] = { // x, y, u, v
-                    -0.5f,  0.5f*ar, 0.f, 0.f,
-                     0.5f, -0.5f*ar, 1.f, 1.f,
-                    -0.5f, -0.5f*ar, 0.f, 1.f,
-                     0.5f,  0.5f*ar, 1.f, 0.f,
-                };
-                D3D11_MAPPED_SUBRESOURCE vertsMapped;
-                d3d11DeviceContext->Map(vertexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &vertsMapped);
-                memcpy(vertsMapped.pData, vertexData, sizeof(vertexData));
-                d3d11DeviceContext->Unmap(vertexBuffer, 0);
-            }
+            D3D11_MAPPED_SUBRESOURCE mappedSubresource;
+            d3d11DeviceContext->Map(constantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedSubresource);
+            Constants* constants = (Constants*)(mappedSubresource.pData);
+            constants->screen_res_x = viewport.Width;
+            constants->screen_res_y = viewport.Height;
+            constants->   tex_res_x = texSize;
+            constants->   tex_res_y = texSize;
+            d3d11DeviceContext->Unmap(constantBuffer, 0);
+        }
+
+        {
+            D3D11_MAPPED_SUBRESOURCE vertsMapped;
+            D3D11_MAPPED_SUBRESOURCE indxsMapped;
+            d3d11DeviceContext->Map(vertexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &vertsMapped);
+            d3d11DeviceContext->Map( indexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &indxsMapped);
 
             {
-                uint16_t indexData[] = { // x, y, u, v
-                    0, 1, 2,
-                    0, 3, 1
-                };
-                D3D11_MAPPED_SUBRESOURCE indxsMapped;
-                d3d11DeviceContext->Map( indexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &indxsMapped);
-                memcpy(indxsMapped.pData,  indexData, sizeof( indexData));
-                d3d11DeviceContext->Unmap( indexBuffer, 0);
+                struct Vert { float x, y, u, v; };
+                typedef uint16_t u16;
+                Vert *verts = (Vert *)vertsMapped.pData;
+                u16  * idxs = (u16  *)indxsMapped.pData;
+
+                char *str = "sup nerds []!";
+                float x = 0;
+                float y = 50;
+                do {
+                    int i = *str;
+                    uint16_t vstart = verts - (Vert *)vertsMapped.pData;
+
+                    float u = (i % 16) * (charSize + 2*padding) + padding;
+                    float v = (i / 16) * (charSize + 2*padding);
+                    float w = charSize + padding*2;
+                    float h = charSize + padding*2;
+
+                    *verts++ = Vert{    x,   h+y,   u,   v};
+                    *verts++ = Vert{  w+x,     y, w+u, h+v};
+                    *verts++ = Vert{    x,     y,   u, h+v};
+                    *verts++ = Vert{  w+x,   h+y, w+u,   v};
+
+                    *idxs++ = vstart+0; *idxs++ = vstart+1; *idxs++ = vstart+2;
+                    *idxs++ = vstart+0; *idxs++ = vstart+3; *idxs++ = vstart+1;
+
+                    x += charWidths[i];
+                } while (*str++);
             }
+
+            d3d11DeviceContext->Unmap( indexBuffer, 0);
+            d3d11DeviceContext->Unmap(vertexBuffer, 0);
         }
 
         d3d11DeviceContext->OMSetRenderTargets(1, &d3d11FrameBufferView, nullptr);
@@ -449,13 +543,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
         d3d11DeviceContext->PSSetShaderResources(0, 1, &textureView);
         d3d11DeviceContext->PSSetSamplers(0, 1, &samplerState);
 
+        d3d11DeviceContext->OMSetBlendState(blendState, nullptr, ~0U);
+
         UINT stride = VERT_FLOAT_COUNT * sizeof(float);
         UINT offset = 0;
+        d3d11DeviceContext->VSSetConstantBuffers(0, 1, &constantBuffer);
         d3d11DeviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
         d3d11DeviceContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R16_UINT, 0);
 
-        // d3d11DeviceContext->Draw(numVerts, 0);
-        d3d11DeviceContext->DrawIndexed(6, 0, 0);
+        d3d11DeviceContext->DrawIndexed(INDX_MAX_COUNT, 0, 0);
 
         d3d11SwapChain->Present(1, 0);
     }
