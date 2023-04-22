@@ -13,6 +13,48 @@ const foundation = @import("zigwin32/win32.zig").foundation;
 
 const zeroInit = @import("std").mem.zeroInit;
 
+
+const GDI_RECT = extern struct {
+  X: i32,
+  Y: i32,
+  Width: i32,
+  Height: i32,
+};
+const GDI_BITMAP_DATA = extern struct {
+  Width:       windows.UINT,
+  Height:      windows.UINT,
+  Stride:      c_int,
+  PixelFormat: c_int ,
+  Scan0:       ?*anyopaque,
+  Reserved:    ?*windows.UINT,
+};
+pub extern "gdiplus" fn GdiplusStartup(
+  token: *windows.ULONG,
+  input: ?*anyopaque,
+  output: ?*anyopaque
+) callconv(windows.WINAPI) c_int;
+pub extern "gdiplus" fn GdipCreateBitmapFromScan0(
+  width : c_int,
+  height: c_int,
+  stride: c_int,
+  format: c_int,
+  scan0: ?[*]u8,
+  bitmap: *?*anyopaque
+) callconv(windows.WINAPI) c_int;
+pub extern "gdiplus" fn GdipBitmapSetPixel(
+  bitmap: ?*anyopaque,
+  x: c_int,
+  y: c_int,
+  color: windows.DWORD
+) callconv(windows.WINAPI) c_int;
+pub extern "gdiplus" fn GdipBitmapLockBits(
+  bitmap: ?*anyopaque,
+  rect: *GDI_RECT,
+  flags: windows.UINT,
+  format: c_int,
+  lockedBitmapData: *GDI_BITMAP_DATA
+) callconv(windows.WINAPI) c_int;
+
 var global_windowDidResize = false;
 
 pub fn main() !void {
@@ -289,13 +331,26 @@ pub fn main() !void {
       .BindFlags          = d3d11.D3D11_BIND_SHADER_RESOURCE,
     });
 
-    const test_tex_bytes = [2*2*4]u8{
+    var test_tex_bytes = [2*2*4]u8{
         0,   0, 255, 255,
       255,   0,   0, 255,
       255,   0,   0, 255,
         0,   0, 255, 255
     };
 
+    var token: windows.ULONG = undefined;
+    _ = GdiplusStartup(&token, null, null);
+    var bitmap: ?*anyopaque = null;
+    const format = @intCast(c_int, @enumToInt(tex_desc.Format));
+    const img_bytes = @ptrCast(?[*]u8, &test_tex_bytes);
+    _ = GdipCreateBitmapFromScan0(2, 2, 0, format, img_bytes, &bitmap);
+    _ = GdipBitmapSetPixel(bitmap, 0, 0, 0xFFFF00FF);
+
+    var locked_data = zeroInit(GDI_BITMAP_DATA, .{});
+    var rect = GDI_RECT { .X = 0, .Y = 0, .Width = 2, .Height = 2 };
+    _ = GdipBitmapLockBits(bitmap, &rect, 1, format, &locked_data);
+
+    @breakpoint();
     const tex_subresource_data = zeroInit(d3d11.D3D11_SUBRESOURCE_DATA, .{
       .pSysMem = &test_tex_bytes,
       .SysMemPitch = 4 * tex_desc.Width,
