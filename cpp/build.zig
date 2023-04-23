@@ -20,11 +20,12 @@ pub fn build(b: *std.Build) void {
     .name = "use_k32",
     // In this case the main source file is merely a path, however, in more
     // complicated build scripts, this could be a generated file.
-    .root_source_file = .{ .path = "gdi.cpp" },
+    .root_source_file = .{ .path = "main.zig" },
     .target = target,
     .optimize = optimize,
   });
 
+  exe.addCSourceFile("gdi.cpp", &.{});
   exe.linkLibC();
   exe.linkLibCpp();
   exe.linkSystemLibrary("Gdiplus");
