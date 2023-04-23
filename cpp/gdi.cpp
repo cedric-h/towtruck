@@ -1,3 +1,5 @@
+// vim: sw=4 ts=4 expandtab smartindent
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #define UNICODE
@@ -8,9 +10,9 @@
 #include <assert.h>
 using namespace Gdiplus;
 
-#define VERT_FLOAT_COUNT 4
-#define VERT_MAX_COUNT   (1 << 12)
-#define INDX_MAX_COUNT   (1 << 13)
+#define VERT_FLOAT_COUNT 8
+#define VERT_MAX_COUNT   ((1 << 12)*VERT_FLOAT_COUNT)
+#define INDX_MAX_COUNT   ((1 << 12)*6)
 
 static bool global_windowDidResize = false;
 
@@ -240,7 +242,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
         D3D11_INPUT_ELEMENT_DESC inputElementDesc[] =
         {
             { "POS", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "TEX", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 }
+            { "TEX", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "COL", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 }
         };
 
         HRESULT hResult = d3d11Device->CreateInputLayout(inputElementDesc, ARRAYSIZE(inputElementDesc), vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &inputLayout);
@@ -370,11 +373,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
                     CLIP_DEFAULT_PRECIS,
                     CLEARTYPE_QUALITY,
                     VARIABLE_PITCH,
-                    L"Arial"
+                    L"Trebuchet MS"
                 );
                 Font font(__hdc, hfont);
                 graphics->ReleaseHDC(__hdc);
                 SolidBrush solidBrush(Color(255, 255, 255, 255));
+
+                graphics->FillRectangle(&solidBrush, Rect(0, 0, charSize+padding*2,
+                                                                charSize+padding*2));
 
                 for (int i = 0; i < 255; i++) {
                     float x = (float)(i % 16) * (charSize + 2*padding) + padding;
@@ -499,7 +505,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
             d3d11DeviceContext->Map( indexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &indxsMapped);
 
             {
-                struct Vert { float x, y, u, v; };
+                struct Vert { float x, y, u, v,   r, g, b, a; };
                 typedef uint16_t u16;
                 Vert *verts = (Vert *)vertsMapped.pData;
                 u16  * idxs = (u16  *)indxsMapped.pData;
@@ -516,16 +522,60 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
                     float w = charSize + padding*2;
                     float h = charSize + padding*2;
 
-                    *verts++ = Vert{    x,   h+y,   u,   v};
-                    *verts++ = Vert{  w+x,     y, w+u, h+v};
-                    *verts++ = Vert{    x,     y,   u, h+v};
-                    *verts++ = Vert{  w+x,   h+y, w+u,   v};
+                    *verts++ = Vert{  x,   h+y,   u,   v, 1, 1, 1, 1};
+                    *verts++ = Vert{w+x,     y, w+u, h+v, 1, 1, 1, 1};
+                    *verts++ = Vert{  x,     y,   u, h+v, 1, 1, 1, 1};
+                    *verts++ = Vert{w+x,   h+y, w+u,   v, 1, 1, 1, 1};
 
                     *idxs++ = vstart+0; *idxs++ = vstart+1; *idxs++ = vstart+2;
                     *idxs++ = vstart+0; *idxs++ = vstart+3; *idxs++ = vstart+1;
 
                     x += charWidths[i];
-                } while (*str++);
+                } while (str++, *str);
+
+                enum ColorKind { ColorKind_Window, ColorKind_WindowTop, ColorKind_COUNT };
+                struct { float r, g, b, a; } palette[ColorKind_COUNT];
+                palette[ColorKind_Window   ] = { 1.0, 0.1, 1.0, 1 };
+                palette[ColorKind_WindowTop] = { 0.8, 0.1, 0.8, 1 };
+
+                auto Rect = [&vertsMapped, &palette, &charWidths, &verts, &idxs](
+                    float x, float y, float w, float h, ColorKind ck
+                ) {
+                    uint16_t vstart = verts - (Vert *)vertsMapped.pData;
+
+                    float u = 0;
+                    float v = 0;
+                    float uv_w = 1;
+                    float uv_h = 1;
+
+                    float r = palette[ck].r;
+                    float g = palette[ck].g;
+                    float b = palette[ck].b;
+                    float a = palette[ck].a;
+
+                    *verts++ = Vert{  x,   h+y,      u,      v, r, g, b, a};
+                    *verts++ = Vert{w+x,     y, uv_w+u, uv_h+v, r, g, b, a};
+                    *verts++ = Vert{  x,     y,      u, uv_h+v, r, g, b, a};
+                    *verts++ = Vert{w+x,   h+y, uv_w+u,      v, r, g, b, a};
+
+                    *idxs++ = vstart+0; *idxs++ = vstart+1; *idxs++ = vstart+2;
+                    *idxs++ = vstart+0; *idxs++ = vstart+3; *idxs++ = vstart+1;
+               };
+               Rect(
+                   viewport.Width /2,
+                   viewport.Height/2,
+                   300,
+                   100,
+                   ColorKind_Window
+               );
+               Rect(
+                   viewport.Width /2,
+                   viewport.Height/2 + (100 - 20),
+                   300,
+                    20,
+                   ColorKind_WindowTop
+               );
+
             }
 
             d3d11DeviceContext->Unmap( indexBuffer, 0);
