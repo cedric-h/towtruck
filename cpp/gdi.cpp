@@ -3,6 +3,7 @@
 extern "C" {
 #include <stdint.h>
     int cpp_launch_window(void (*draw)(float *vrt, uint16_t *idx));
+    void cpp_set_font(int *_charWidths);
 }
 
 #define WIN32_LEAN_AND_MEAN
@@ -46,6 +47,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
             result = DefWindowProcW(hwnd, msg, wparam, lparam);
     }
     return result;
+}
+
+int *charWidths;
+void cpp_set_font(int *_charWidths) {
+    charWidths = _charWidths;
 }
 
 int cpp_launch_window(void (*draw)(float *vrt, uint16_t *idx)) {
@@ -339,7 +345,6 @@ int cpp_launch_window(void (*draw)(float *vrt, uint16_t *idx)) {
         d3d11Device->CreateBlendState(&desc, &blendState);
     }
 
-    int charWidths[255] = {0};
     int charSize = 12;
     int padding = charSize/2;
     int texSize;
