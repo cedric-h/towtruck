@@ -26,7 +26,6 @@ pub fn build(b: *std.Build) void {
   });
 
   exe.addCSourceFile("gdi.cpp", &.{});
-  exe.linkLibC();
   exe.linkLibCpp();
   exe.linkSystemLibrary("Gdiplus");
   exe.linkSystemLibrary("Gdi32");

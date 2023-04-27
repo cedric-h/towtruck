@@ -30,5 +30,5 @@ VS_Output vs_main(VS_Input input) {
 }
 
 float4 ps_main(VS_Output input) : SV_Target {
-    return input.col * mytexture.Sample(mysampler, input.uv);   
+    return input.col * mytexture.Sample(mysampler, input.uv).a;
 }

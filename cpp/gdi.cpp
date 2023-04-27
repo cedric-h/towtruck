@@ -3,7 +3,8 @@
 extern "C" {
 #include <stdint.h>
     int cpp_launch_window(void (*draw)(float *vrt, uint16_t *idx));
-    void cpp_set_font(int *_charWidths);
+    void cpp_set_font(uint16_t charSize, uint16_t *_charWidths);
+    void cpp_window_wh(uint16_t *width, uint16_t *height);
 }
 
 #define WIN32_LEAN_AND_MEAN
@@ -49,16 +50,29 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     return result;
 }
 
-int *charWidths;
-void cpp_set_font(int *_charWidths) {
+bool fontDirty = true;
+uint16_t *charWidths;
+uint16_t charSize;
+HWND hwnd;
+void cpp_set_font(uint16_t _charSize, uint16_t *_charWidths) {
+    if (charSize != _charSize)
+        fontDirty = true;
+    charSize = _charSize;
     charWidths = _charWidths;
+}
+
+void cpp_window_wh(uint16_t *width, uint16_t *height) {
+    RECT winRect;
+    if (SUCCEEDED(GetClientRect(hwnd, &winRect))) {
+        *width  = winRect.right - winRect.left;
+        *height = winRect.bottom - winRect.top;
+    }
 }
 
 int cpp_launch_window(void (*draw)(float *vrt, uint16_t *idx)) {
     HINSTANCE hInstance = GetModuleHandle(nullptr);
 
     // Open a window
-    HWND hwnd;
     {
         WNDCLASSEXW winClass = {};
         winClass.cbSize = sizeof(WNDCLASSEXW);
@@ -82,7 +96,7 @@ int cpp_launch_window(void (*draw)(float *vrt, uint16_t *idx)) {
 
         hwnd = CreateWindowExW(WS_EX_OVERLAPPEDWINDOW,
                                 winClass.lpszClassName,
-                                L"03. Drawing a Textured Quad",
+                                L"thing",
                                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                                 CW_USEDEFAULT, CW_USEDEFAULT,
                                 initialWidth, 
@@ -311,13 +325,13 @@ int cpp_launch_window(void (*draw)(float *vrt, uint16_t *idx)) {
     {
         D3D11_SAMPLER_DESC samplerDesc = {};
         samplerDesc.Filter         = D3D11_FILTER_MIN_MAG_MIP_POINT;
-        samplerDesc.AddressU       = D3D11_TEXTURE_ADDRESS_BORDER;
-        samplerDesc.AddressV       = D3D11_TEXTURE_ADDRESS_BORDER;
-        samplerDesc.AddressW       = D3D11_TEXTURE_ADDRESS_BORDER;
-        samplerDesc.BorderColor[0] = 1.0f;
-        samplerDesc.BorderColor[1] = 1.0f;
-        samplerDesc.BorderColor[2] = 1.0f;
-        samplerDesc.BorderColor[3] = 1.0f;
+        // samplerDesc.AddressU       = D3D11_TEXTURE_ADDRESS_BORDER;
+        // samplerDesc.AddressV       = D3D11_TEXTURE_ADDRESS_BORDER;
+        // samplerDesc.AddressW       = D3D11_TEXTURE_ADDRESS_BORDER;
+        // samplerDesc.BorderColor[0] = 1.0f;
+        // samplerDesc.BorderColor[1] = 1.0f;
+        // samplerDesc.BorderColor[2] = 1.0f;
+        // samplerDesc.BorderColor[3] = 1.0f;
         samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
 
         d3d11Device->CreateSamplerState(&samplerDesc, &samplerState);
@@ -345,117 +359,9 @@ int cpp_launch_window(void (*draw)(float *vrt, uint16_t *idx)) {
         d3d11Device->CreateBlendState(&desc, &blendState);
     }
 
-    int charSize = 12;
-    int padding = charSize/2;
     int texSize;
-
-    // Load Image
-    ID3D11Texture2D* texture;
-    ID3D11ShaderResourceView* textureView;
-    {
-        int texBytesPerRow;
-        unsigned char *texBytes = 0;
-        ULONG_PTR gdiplusToken;
-        {
-            texSize = (padding*2 + charSize)*16;
-
-            // Initialize GDI+.
-            GdiplusStartupInput gdiplusStartupInput;
-            GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
-            Bitmap bitmap(texSize, texSize, PixelFormat32bppARGB);
-
-            Graphics *graphics = Graphics::FromImage(&bitmap);
-            // graphics->Clear(Color(0, 0, 0, 255));
-            graphics->SetPixelOffsetMode(PixelOffsetModeHighQuality);
-            // graphics->SetPixelOffsetMode(PixelOffsetModeNone);
-            graphics->SetInterpolationMode(InterpolationModeHighQualityBicubic);
-            graphics->SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
-            {
-                // FontFamily  fontFamily(L"Comic Sans MS");
-                // Font        font(&fontFamily, charSizePoints, FontStyleRegular, UnitPixel);
-                HDC __hdc = graphics->GetHDC();
-                SetMapMode(__hdc, MM_TEXT);
-                float charSizePoints = charSize * 96 / 72;
-                HFONT hfont = CreateFont(
-                    charSizePoints,0,0,0,
-                    FW_DONTCARE,false,false,false,
-                    DEFAULT_CHARSET,
-                    OUT_OUTLINE_PRECIS,
-                    CLIP_DEFAULT_PRECIS,
-                    CLEARTYPE_QUALITY,
-                    VARIABLE_PITCH,
-                    L"Trebuchet MS"
-                );
-                Font font(__hdc, hfont);
-                graphics->ReleaseHDC(__hdc);
-                SolidBrush solidBrush(Color(255, 255, 255, 255));
-
-                graphics->FillRectangle(&solidBrush, Rect(0, 0, charSize+padding*2,
-                                                                charSize+padding*2));
-
-                for (int i = 0; i < 255; i++) {
-                    float x = (float)(i % 16) * (charSize + 2*padding) + padding;
-                    float y = (float)(i / 16) * (charSize + 2*padding) + padding;
-                    PointF pointF(x, y);
-                    WCHAR str[2]{ (WCHAR)i, 0 };
-                    graphics->DrawString(str, -1, &font, pointF, &solidBrush);
-
-                    HDC hdc = graphics->GetHDC();
-                    {
-                        SetMapMode(hdc, MM_TEXT);
-                        SelectObject(hdc, hfont);
-
-                        ABCFLOAT abcf;
-                        GetCharABCWidthsFloat(hdc, i, i, &abcf);
-                        float width = abcf.abcfA + abcf.abcfB + abcf.abcfC;
-                        charWidths[i] = round(width); /* idk why but ... */
-                    }
-                    graphics->ReleaseHDC(hdc);
-                }
-            }
-
-            BitmapData bd = {0};
-            Rect rect(0, 0, texSize, texSize);
-            bitmap.LockBits(&rect, 1, PixelFormat32bppARGB, &bd);
-            texBytes = (unsigned char *)bd.Scan0;
-            texSize = bd.Width;
-            texSize = bd.Height;
-            texBytesPerRow = bd.Stride;
-
-            /* premultiply alpha */
-            if (1)
-                for (int x = 0; x < texSize; x++)
-                    for (int y = 0; y < texSize; y++) {
-                        float r = texBytes[y*texBytesPerRow + x*4 + 0];
-                        float g = texBytes[y*texBytesPerRow + x*4 + 1];
-                        float b = texBytes[y*texBytesPerRow + x*4 + 2];
-                        float a = (float)texBytes[y*texBytesPerRow + x*4 + 3] / 255.0f;
-                        texBytes[y*texBytesPerRow + x*4 + 0] = round(r*a);
-                        texBytes[y*texBytesPerRow + x*4 + 1] = round(g*a);
-                        texBytes[y*texBytesPerRow + x*4 + 2] = round(b*a);
-                    }
-        }
-
-        // Create Texture
-        D3D11_TEXTURE2D_DESC textureDesc = {};
-        textureDesc.Width              = texSize;
-        textureDesc.Height             = texSize;
-        textureDesc.MipLevels          = 1;
-        textureDesc.ArraySize          = 1;
-        textureDesc.Format             = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-        textureDesc.SampleDesc.Count   = 1;
-        textureDesc.Usage              = D3D11_USAGE_IMMUTABLE;
-        textureDesc.BindFlags          = D3D11_BIND_SHADER_RESOURCE;
-
-        D3D11_SUBRESOURCE_DATA textureSubresourceData = {};
-        textureSubresourceData.pSysMem = texBytes;
-        textureSubresourceData.SysMemPitch = texBytesPerRow;
-
-        d3d11Device->CreateTexture2D(&textureDesc, &textureSubresourceData, &texture);
-        d3d11Device->CreateShaderResourceView(texture, nullptr, &textureView);
-
-        GdiplusShutdown(gdiplusToken);
-    }
+    ID3D11Texture2D* texture = nullptr;
+    ID3D11ShaderResourceView* textureView = nullptr;
 
     // Main Loop
     bool isRunning = true;
@@ -489,6 +395,120 @@ int cpp_launch_window(void (*draw)(float *vrt, uint16_t *idx)) {
 
             global_windowDidResize = false;
         }
+
+        // Load Image
+        if (fontDirty) {
+            fontDirty = false;
+
+            if (texture     != nullptr) texture    ->Release();
+            if (textureView != nullptr) textureView->Release();
+
+            int padding = charSize/2;
+
+            int texBytesPerRow;
+            unsigned char *texBytes = 0;
+            ULONG_PTR gdiplusToken;
+            {
+                texSize = (padding*2 + charSize)*16;
+
+                // Initialize GDI+.
+                GdiplusStartupInput gdiplusStartupInput;
+                GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
+                Bitmap bitmap(texSize, texSize, PixelFormat32bppPARGB);
+
+                Graphics *graphics = Graphics::FromImage(&bitmap);
+                // graphics->Clear(Color(0, 0, 0, 255));
+                graphics->SetPixelOffsetMode( 1 ? PixelOffsetModeHighQuality : PixelOffsetModeNone);
+                graphics->SetInterpolationMode(InterpolationModeHighQualityBicubic);
+                graphics->SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+                graphics->SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+                {
+                    // FontFamily  fontFamily(L"Comic Sans MS");
+                    // Font        font(&fontFamily, charSizePoints, FontStyleRegular, UnitPixel);
+                    HDC __hdc = graphics->GetHDC();
+                    SetMapMode(__hdc, MM_TEXT);
+                    float charSizePoints = charSize * 96 / 72;
+                    HFONT hfont = CreateFont(
+                        charSizePoints,0,0,0,
+                        FW_DONTCARE,false,false,false,
+                        DEFAULT_CHARSET,
+                        OUT_OUTLINE_PRECIS,
+                        CLIP_DEFAULT_PRECIS,
+                        CLEARTYPE_QUALITY,
+                        VARIABLE_PITCH,
+                        0 ? L"Impact" : L"Trebuchet MS"
+                    );
+                    Font font(__hdc, hfont);
+                    graphics->ReleaseHDC(__hdc);
+                    SolidBrush solidBrush(Color(255, 255, 255, 255));
+
+                    graphics->FillRectangle(&solidBrush, Rect(0, 0, charSize+padding*2,
+                                                                    charSize+padding*2));
+
+                    for (int i = 0; i < 255; i++) {
+                        float x = (float)(i % 16) * (charSize + 2*padding) + padding;
+                        float y = (float)(i / 16) * (charSize + 2*padding) + padding;
+                        PointF pointF(x, y);
+                        WCHAR str[2]{ (WCHAR)i, 0 };
+                        graphics->DrawString(str, -1, &font, pointF, &solidBrush);
+
+                        HDC hdc = graphics->GetHDC();
+                        {
+                            SetMapMode(hdc, MM_TEXT);
+                            SelectObject(hdc, hfont);
+
+                            ABCFLOAT abcf;
+                            GetCharABCWidthsFloat(hdc, i, i, &abcf);
+                            float width = abcf.abcfA + abcf.abcfB + abcf.abcfC;
+                            charWidths[i] = round(width);
+                        }
+                        graphics->ReleaseHDC(hdc);
+                    }
+                }
+
+                BitmapData bd = {0};
+                Rect rect(0, 0, texSize, texSize);
+                bitmap.LockBits(&rect, 1, PixelFormat32bppPARGB, &bd);
+                texBytes = (unsigned char *)bd.Scan0;
+                texSize = bd.Width;
+                texSize = bd.Height;
+                texBytesPerRow = bd.Stride;
+
+                /* premultiply alpha */
+                if (0)
+                    for (int x = 0; x < texSize; x++)
+                        for (int y = 0; y < texSize; y++) {
+                            // float r = texBytes[y*texBytesPerRow + x*4 + 0];
+                            // float g = texBytes[y*texBytesPerRow + x*4 + 1];
+                            // float b = texBytes[y*texBytesPerRow + x*4 + 2];
+                            float a = texBytes[y*texBytesPerRow + x*4 + 3];
+                            texBytes[y*texBytesPerRow + x*4 + 0] = a;
+                            texBytes[y*texBytesPerRow + x*4 + 1] = a;
+                            texBytes[y*texBytesPerRow + x*4 + 2] = a;
+                        }
+            }
+
+            // Create Texture
+            D3D11_TEXTURE2D_DESC textureDesc = {};
+            textureDesc.Width              = texSize;
+            textureDesc.Height             = texSize;
+            textureDesc.MipLevels          = 1;
+            textureDesc.ArraySize          = 1;
+            textureDesc.Format             = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+            textureDesc.SampleDesc.Count   = 1;
+            textureDesc.Usage              = D3D11_USAGE_IMMUTABLE;
+            textureDesc.BindFlags          = D3D11_BIND_SHADER_RESOURCE;
+
+            D3D11_SUBRESOURCE_DATA textureSubresourceData = {};
+            textureSubresourceData.pSysMem = texBytes;
+            textureSubresourceData.SysMemPitch = texBytesPerRow;
+
+            d3d11Device->CreateTexture2D(&textureDesc, &textureSubresourceData, &texture);
+            d3d11Device->CreateShaderResourceView(texture, nullptr, &textureView);
+
+            GdiplusShutdown(gdiplusToken);
+        }
+
 
         FLOAT backgroundColor[4] = { 0.1f, 0.2f, 0.6f, 1.0f };
         d3d11DeviceContext->ClearRenderTargetView(d3d11FrameBufferView, backgroundColor);
